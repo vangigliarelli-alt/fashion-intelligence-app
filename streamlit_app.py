@@ -35,13 +35,8 @@ def load_trends():
 
     params = {
         "select": "*",
-
-        # escludiamo vecchi record incompleti
         "trend_name": "not.is.null",
         "combined_score": "not.is.null",
-        "fashion_category": "not.is.null",
-        "action_label": "not.is.null",
-
         "order": "combined_score.desc"
     }
 
@@ -76,35 +71,27 @@ try:
 
     if not data:
         st.warning(
-            "Nessun trend valido trovato nel database."
+            "Nessun trend trovato nel database."
         )
         st.stop()
 
     df = pd.DataFrame(data)
 
     # ==================================================
-    # PULIZIA
+    # BASIC CLEANUP
     # ==================================================
 
-    required_columns = [
-        "trend_name",
-        "combined_score",
-        "fashion_category",
-        "action_label"
-    ]
+    if "trend_name" not in df.columns:
+        st.error("Manca la colonna trend_name.")
+        st.stop()
 
-    for col in required_columns:
-        if col not in df.columns:
-            st.error(
-                f"Manca la colonna {col} nella tabella Supabase."
-            )
-            st.stop()
+    if "combined_score" not in df.columns:
+        st.error("Manca la colonna combined_score.")
+        st.stop()
 
     df = df[
         df["trend_name"].notna() &
-        df["combined_score"].notna() &
-        df["fashion_category"].notna() &
-        df["action_label"].notna()
+        df["combined_score"].notna()
     ].copy()
 
     df["combined_score"] = pd.to_numeric(
@@ -117,34 +104,126 @@ try:
     )
 
     # ==================================================
-    # RIMUOVIAMO EVENTUALI VECCHI RECORD SPORCHI
+    # REMOVE OLD / GENERIC / NON-FASHION SIGNALS
     # ==================================================
 
-    bad_terms = [
+    blocked_terms = [
         "wallpaper",
         "fanart",
         "fan art",
         "iphone",
+        "android",
+        "phone case",
+        "screen",
+        "screensaver",
+        "home decor",
+        "porch decor",
+        "decor",
         "nails",
         "nail",
-        "porch decor",
-        "home decor",
-        "decor"
+        "makeup",
+        "hairstyle",
+        "caption",
+        "captions",
+        "meme",
+        "gaming",
+        "recipe",
+        "food",
+        "tattoo"
     ]
 
-    mask_bad = df["trend_name"].str.lower().apply(
-        lambda x: any(
-            term in str(x)
-            for term in bad_terms
-        )
-    )
+    generic_tiktok_terms = [
+        "outfitinspo",
+        "fashiontiktok",
+        "fashiontok",
+        "grwm",
+        "ootd",
+        "outfitideas",
+        "outfitinspiration",
+        "fitcheck",
+        "fyp",
+        "foryou",
+        "foryoupage"
+    ]
+
+    def is_blocked(name):
+
+        text = str(name).lower()
+
+        if any(
+            term in text
+            for term in blocked_terms
+        ):
+            return True
+
+        if text.strip() in generic_tiktok_terms:
+            return True
+
+        return False
 
     df = df[
-        ~mask_bad
+        ~df["trend_name"].apply(is_blocked)
     ].copy()
 
     # ==================================================
-    # ORDINA
+    # KEEP CURRENT ENGINE RECORDS
+    # ==================================================
+
+    if "fashion_category" in df.columns:
+
+        current_mask = (
+            df["fashion_category"].notna()
+        )
+
+        # Google records current
+        google_mask = (
+            df["fashion_category"]
+            .fillna("")
+            .str.upper()
+            .eq("GOOGLE MONITORED")
+        )
+
+        # TikTok current records should carry trend_level
+        if "trend_level" in df.columns:
+
+            tiktok_mask = (
+                df["trend_level"].notna()
+            )
+
+        else:
+            tiktok_mask = pd.Series(
+                False,
+                index=df.index
+            )
+
+        # Pinterest current records
+        pinterest_mask = (
+            df.get(
+                "source_summary",
+                pd.Series("", index=df.index)
+            )
+            .fillna("")
+            .str.lower()
+            .str.contains("pinterest")
+            &
+            df.get(
+                "action_label",
+                pd.Series(None, index=df.index)
+            )
+            .notna()
+        )
+
+        df = df[
+            current_mask &
+            (
+                google_mask |
+                tiktok_mask |
+                pinterest_mask
+            )
+        ].copy()
+
+    # ==================================================
+    # REMOVE DUPLICATE RECORDS
     # ==================================================
 
     df = df.sort_values(
@@ -152,64 +231,212 @@ try:
         ascending=False
     )
 
+    df = df.drop_duplicates(
+        subset=["trend_name"],
+        keep="first"
+    )
+
+    # ==================================================
+    # VALIDATION
+    # ==================================================
+
+    if df.empty:
+
+        st.warning(
+            "Nessun trend valido dopo la pulizia."
+        )
+
+        st.stop()
+
+    # ==================================================
+    # TOP DATA HELPERS
+    # ==================================================
+
+    def safe_first(frame):
+
+        if frame.empty:
+            return None
+
+        return frame.iloc[0]
+
+    # Top overall
+    top_overall = safe_first(df)
+
+    # Top material
+    materials_df = df[
+        df.get(
+            "fashion_category",
+            pd.Series("", index=df.index)
+        )
+        .fillna("")
+        .str.upper()
+        .eq("MATERIALS")
+    ].sort_values(
+        "combined_score",
+        ascending=False
+    )
+
+    top_material = safe_first(
+        materials_df
+    )
+
+    # Top color
+    colors_df = df[
+        df.get(
+            "fashion_category",
+            pd.Series("", index=df.index)
+        )
+        .fillna("")
+        .str.upper()
+        .eq("COLORS")
+    ].sort_values(
+        "combined_score",
+        ascending=False
+    )
+
+    top_color = safe_first(
+        colors_df
+    )
+
+    # Emerging trend
+    if "trend_level" in df.columns:
+
+        emerging_df = df[
+            df["trend_level"]
+            .fillna("")
+            .str.upper()
+            .eq("EMERGING TREND")
+        ].sort_values(
+            "combined_score",
+            ascending=False
+        )
+
+    else:
+        emerging_df = pd.DataFrame()
+
+    top_emerging = safe_first(
+        emerging_df
+    )
+
+    # ==================================================
+    # STATUS
+    # ==================================================
+
     st.success(
         f"Fashion Intelligence attiva — "
         f"{len(df)} trend validi caricati."
     )
 
     # ==================================================
-    # TOP TREND
+    # KPI CARDS
     # ==================================================
-
-    top = df.iloc[0]
 
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        st.metric(
-            "Top Trend",
-            str(
-                top.get(
-                    "trend_name",
-                    "-"
+
+        if top_overall is not None:
+
+            st.metric(
+                "Top Trend",
+                str(
+                    top_overall.get(
+                        "trend_name",
+                        "-"
+                    )
                 )
             )
-        )
+
+            st.caption(
+                f"Score {top_overall.get('combined_score', '-')}"
+            )
+
+        else:
+
+            st.metric(
+                "Top Trend",
+                "-"
+            )
 
     with col2:
-        st.metric(
-            "Fashion Score",
-            f"{float(top.get('combined_score', 0)):.1f}"
-        )
+
+        if top_material is not None:
+
+            st.metric(
+                "Top Material",
+                str(
+                    top_material.get(
+                        "trend_name",
+                        "-"
+                    )
+                )
+            )
+
+            st.caption(
+                f"Score {top_material.get('combined_score', '-')}"
+            )
+
+        else:
+
+            st.metric(
+                "Top Material",
+                "-"
+            )
 
     with col3:
 
-        value = top.get(
-            "momentum_label"
-        )
+        if top_color is not None:
 
-        st.metric(
-            "Momentum",
-            "-" if pd.isna(value)
-            else str(value)
-        )
+            st.metric(
+                "Top Color",
+                str(
+                    top_color.get(
+                        "trend_name",
+                        "-"
+                    )
+                )
+            )
+
+            st.caption(
+                f"Score {top_color.get('combined_score', '-')}"
+            )
+
+        else:
+
+            st.metric(
+                "Top Color",
+                "-"
+            )
 
     with col4:
 
-        value = top.get(
-            "action_label"
-        )
+        if top_emerging is not None:
 
-        st.metric(
-            "Action",
-            "-" if pd.isna(value)
-            else str(value)
-        )
+            st.metric(
+                "Emerging",
+                str(
+                    top_emerging.get(
+                        "trend_name",
+                        "-"
+                    )
+                )
+            )
+
+            st.caption(
+                f"Score {top_emerging.get('combined_score', '-')}"
+            )
+
+        else:
+
+            st.metric(
+                "Emerging",
+                "-"
+            )
 
     st.divider()
 
     # ==================================================
-    # SOURCE FILTERS
+    # FILTERS
     # ==================================================
 
     st.subheader(
@@ -253,7 +480,41 @@ try:
             .str.contains(
                 selected_source
             )
-        ]
+        ].copy()
+
+    # ==================================================
+    # CATEGORY FILTER
+    # ==================================================
+
+    if (
+        "fashion_category"
+        in filtered_df.columns
+    ):
+
+        categories = sorted(
+            [
+                str(x)
+                for x
+                in filtered_df[
+                    "fashion_category"
+                ]
+                .dropna()
+                .unique()
+            ]
+        )
+
+        category_choice = st.selectbox(
+            "Categoria",
+            ["Tutte"] + categories
+        )
+
+        if category_choice != "Tutte":
+
+            filtered_df = filtered_df[
+                filtered_df[
+                    "fashion_category"
+                ] == category_choice
+            ].copy()
 
     # ==================================================
     # TABLE
@@ -266,9 +527,11 @@ try:
         "google_score",
         "pinterest_score",
         "tiktok_score",
+        "trend_level",
         "momentum_label",
         "action_label",
-        "trend_level",
+        "video_count",
+        "author_count",
         "source_summary"
     ]
 
@@ -290,9 +553,11 @@ try:
             "google_score": "Google",
             "pinterest_score": "Pinterest",
             "tiktok_score": "TikTok",
+            "trend_level": "Trend Level",
             "momentum_label": "Momentum",
             "action_label": "Action",
-            "trend_level": "Trend Level",
+            "video_count": "Video",
+            "author_count": "Autori",
             "source_summary": "Fonte"
         }
     )
