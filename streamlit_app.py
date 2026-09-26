@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import pandas as pd
+import time
 
 # ======================================================
 # PAGE CONFIG
@@ -18,6 +19,7 @@ st.set_page_config(
 
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+N8N_WEBHOOK_URL = st.secrets["N8N_WEBHOOK_URL"]
 
 # ======================================================
 # LOAD DATA
@@ -51,6 +53,27 @@ def load_trends():
 
     return response.json()
 
+
+# ======================================================
+# TRIGGER N8N
+# ======================================================
+
+def trigger_n8n():
+
+    response = requests.post(
+        N8N_WEBHOOK_URL,
+        json={
+            "source": "streamlit_app",
+            "action": "refresh_fashion_intelligence"
+        },
+        timeout=20
+    )
+
+    response.raise_for_status()
+
+    return response
+
+
 # ======================================================
 # HEADER
 # ======================================================
@@ -62,6 +85,64 @@ st.caption(
 )
 
 # ======================================================
+# ACTION BUTTONS
+# ======================================================
+
+button_col1, button_col2, button_col3 = st.columns(
+    [1, 1, 4]
+)
+
+with button_col1:
+
+    if st.button(
+        "🔄 AGGIORNA ORA",
+        type="primary",
+        use_container_width=True
+    ):
+
+        try:
+
+            with st.spinner(
+                "Avvio aggiornamento Fashion Intelligence..."
+            ):
+
+                trigger_n8n()
+
+            st.success(
+                "Aggiornamento avviato correttamente."
+            )
+
+            st.info(
+                "n8n sta elaborando Google, Pinterest e TikTok. "
+                "Attendi qualche istante e poi premi RICARICA DATI."
+            )
+
+        except Exception as e:
+
+            st.error(
+                "Non sono riuscito ad avviare n8n."
+            )
+
+            st.code(
+                str(e)
+            )
+
+
+with button_col2:
+
+    if st.button(
+        "↻ RICARICA DATI",
+        use_container_width=True
+    ):
+
+        st.cache_data.clear()
+        st.rerun()
+
+
+st.divider()
+
+
+# ======================================================
 # DATA
 # ======================================================
 
@@ -70,9 +151,11 @@ try:
     data = load_trends()
 
     if not data:
+
         st.warning(
             "Nessun trend trovato nel database."
         )
+
         st.stop()
 
     df = pd.DataFrame(data)
@@ -82,29 +165,43 @@ try:
     # ==================================================
 
     if "trend_name" not in df.columns:
-        st.error("Manca la colonna trend_name.")
+
+        st.error(
+            "Manca la colonna trend_name."
+        )
+
         st.stop()
+
 
     if "combined_score" not in df.columns:
-        st.error("Manca la colonna combined_score.")
+
+        st.error(
+            "Manca la colonna combined_score."
+        )
+
         st.stop()
 
+
     df = df[
-        df["trend_name"].notna() &
+        df["trend_name"].notna()
+        &
         df["combined_score"].notna()
     ].copy()
+
 
     df["combined_score"] = pd.to_numeric(
         df["combined_score"],
         errors="coerce"
     )
 
+
     df = df.dropna(
         subset=["combined_score"]
     )
 
+
     # ==================================================
-    # REMOVE OLD / GENERIC / NON-FASHION SIGNALS
+    # CLEAN OLD / GENERIC SIGNALS
     # ==================================================
 
     blocked_terms = [
@@ -132,6 +229,7 @@ try:
         "tattoo"
     ]
 
+
     generic_tiktok_terms = [
         "outfitinspo",
         "fashiontiktok",
@@ -146,9 +244,10 @@ try:
         "foryoupage"
     ]
 
+
     def is_blocked(name):
 
-        text = str(name).lower()
+        text = str(name).lower().strip()
 
         if any(
             term in text
@@ -156,14 +255,18 @@ try:
         ):
             return True
 
-        if text.strip() in generic_tiktok_terms:
+        if text in generic_tiktok_terms:
             return True
 
         return False
 
+
     df = df[
-        ~df["trend_name"].apply(is_blocked)
+        ~df["trend_name"].apply(
+            is_blocked
+        )
     ].copy()
+
 
     # ==================================================
     # KEEP CURRENT ENGINE RECORDS
@@ -175,7 +278,7 @@ try:
             df["fashion_category"].notna()
         )
 
-        # Google records current
+
         google_mask = (
             df["fashion_category"]
             .fillna("")
@@ -183,7 +286,7 @@ try:
             .eq("GOOGLE MONITORED")
         )
 
-        # TikTok current records should carry trend_level
+
         if "trend_level" in df.columns:
 
             tiktok_mask = (
@@ -191,39 +294,45 @@ try:
             )
 
         else:
+
             tiktok_mask = pd.Series(
                 False,
                 index=df.index
             )
 
-        # Pinterest current records
-        pinterest_mask = (
-            df.get(
-                "source_summary",
-                pd.Series("", index=df.index)
+
+        if "source_summary" in df.columns:
+
+            pinterest_mask = (
+                df["source_summary"]
+                .fillna("")
+                .str.lower()
+                .str.contains("pinterest")
             )
-            .fillna("")
-            .str.lower()
-            .str.contains("pinterest")
-            &
-            df.get(
-                "action_label",
-                pd.Series(None, index=df.index)
+
+        else:
+
+            pinterest_mask = pd.Series(
+                False,
+                index=df.index
             )
-            .notna()
-        )
+
 
         df = df[
-            current_mask &
+            current_mask
+            &
             (
-                google_mask |
-                tiktok_mask |
+                google_mask
+                |
+                tiktok_mask
+                |
                 pinterest_mask
             )
         ].copy()
 
+
     # ==================================================
-    # REMOVE DUPLICATE RECORDS
+    # REMOVE DUPLICATES
     # ==================================================
 
     df = df.sort_values(
@@ -231,14 +340,12 @@ try:
         ascending=False
     )
 
+
     df = df.drop_duplicates(
         subset=["trend_name"],
         keep="first"
     )
 
-    # ==================================================
-    # VALIDATION
-    # ==================================================
 
     if df.empty:
 
@@ -248,8 +355,9 @@ try:
 
         st.stop()
 
+
     # ==================================================
-    # TOP DATA HELPERS
+    # HELPERS
     # ==================================================
 
     def safe_first(frame):
@@ -259,14 +367,27 @@ try:
 
         return frame.iloc[0]
 
-    # Top overall
-    top_overall = safe_first(df)
 
-    # Top material
+    # ==================================================
+    # TOP OVERALL
+    # ==================================================
+
+    top_overall = safe_first(
+        df
+    )
+
+
+    # ==================================================
+    # TOP MATERIAL
+    # ==================================================
+
     materials_df = df[
         df.get(
             "fashion_category",
-            pd.Series("", index=df.index)
+            pd.Series(
+                "",
+                index=df.index
+            )
         )
         .fillna("")
         .str.upper()
@@ -276,15 +397,23 @@ try:
         ascending=False
     )
 
+
     top_material = safe_first(
         materials_df
     )
 
-    # Top color
+
+    # ==================================================
+    # TOP COLOR
+    # ==================================================
+
     colors_df = df[
         df.get(
             "fashion_category",
-            pd.Series("", index=df.index)
+            pd.Series(
+                "",
+                index=df.index
+            )
         )
         .fillna("")
         .str.upper()
@@ -294,11 +423,16 @@ try:
         ascending=False
     )
 
+
     top_color = safe_first(
         colors_df
     )
 
-    # Emerging trend
+
+    # ==================================================
+    # TOP EMERGING
+    # ==================================================
+
     if "trend_level" in df.columns:
 
         emerging_df = df[
@@ -312,11 +446,14 @@ try:
         )
 
     else:
+
         emerging_df = pd.DataFrame()
+
 
     top_emerging = safe_first(
         emerging_df
     )
+
 
     # ==================================================
     # STATUS
@@ -327,18 +464,20 @@ try:
         f"{len(df)} trend validi caricati."
     )
 
+
     # ==================================================
     # KPI CARDS
     # ==================================================
 
     col1, col2, col3, col4 = st.columns(4)
 
+
     with col1:
 
         if top_overall is not None:
 
             st.metric(
-                "Top Trend",
+                "🔥 Top Trend",
                 str(
                     top_overall.get(
                         "trend_name",
@@ -348,22 +487,24 @@ try:
             )
 
             st.caption(
-                f"Score {top_overall.get('combined_score', '-')}"
+                f"Fashion Score "
+                f"{top_overall.get('combined_score', '-')}"
             )
 
         else:
 
             st.metric(
-                "Top Trend",
+                "🔥 Top Trend",
                 "-"
             )
+
 
     with col2:
 
         if top_material is not None:
 
             st.metric(
-                "Top Material",
+                "🧵 Top Material",
                 str(
                     top_material.get(
                         "trend_name",
@@ -373,22 +514,24 @@ try:
             )
 
             st.caption(
-                f"Score {top_material.get('combined_score', '-')}"
+                f"Fashion Score "
+                f"{top_material.get('combined_score', '-')}"
             )
 
         else:
 
             st.metric(
-                "Top Material",
+                "🧵 Top Material",
                 "-"
             )
+
 
     with col3:
 
         if top_color is not None:
 
             st.metric(
-                "Top Color",
+                "🎨 Top Color",
                 str(
                     top_color.get(
                         "trend_name",
@@ -398,22 +541,24 @@ try:
             )
 
             st.caption(
-                f"Score {top_color.get('combined_score', '-')}"
+                f"Fashion Score "
+                f"{top_color.get('combined_score', '-')}"
             )
 
         else:
 
             st.metric(
-                "Top Color",
+                "🎨 Top Color",
                 "-"
             )
+
 
     with col4:
 
         if top_emerging is not None:
 
             st.metric(
-                "Emerging",
+                "🚀 Emerging",
                 str(
                     top_emerging.get(
                         "trend_name",
@@ -423,25 +568,29 @@ try:
             )
 
             st.caption(
-                f"Score {top_emerging.get('combined_score', '-')}"
+                f"Fashion Score "
+                f"{top_emerging.get('combined_score', '-')}"
             )
 
         else:
 
             st.metric(
-                "Emerging",
+                "🚀 Emerging",
                 "-"
             )
 
+
     st.divider()
 
+
     # ==================================================
-    # FILTERS
+    # TREND INTELLIGENCE
     # ==================================================
 
     st.subheader(
         "Trend Intelligence"
     )
+
 
     source_choice = st.radio(
         "Fonte",
@@ -454,11 +603,19 @@ try:
         horizontal=True
     )
 
+
     filtered_df = df.copy()
 
+
+    # ==================================================
+    # SOURCE FILTER
+    # ==================================================
+
     if (
-        source_choice != "Tutte" and
-        "source_summary" in filtered_df.columns
+        source_choice != "Tutte"
+        and
+        "source_summary"
+        in filtered_df.columns
     ):
 
         source_map = {
@@ -467,9 +624,13 @@ try:
             "TikTok": "tiktok"
         }
 
-        selected_source = source_map[
-            source_choice
-        ]
+
+        selected_source = (
+            source_map[
+                source_choice
+            ]
+        )
+
 
         filtered_df = filtered_df[
             filtered_df[
@@ -481,6 +642,7 @@ try:
                 selected_source
             )
         ].copy()
+
 
     # ==================================================
     # CATEGORY FILTER
@@ -503,18 +665,62 @@ try:
             ]
         )
 
+
         category_choice = st.selectbox(
             "Categoria",
             ["Tutte"] + categories
         )
 
-        if category_choice != "Tutte":
+
+        if (
+            category_choice
+            != "Tutte"
+        ):
 
             filtered_df = filtered_df[
                 filtered_df[
                     "fashion_category"
-                ] == category_choice
+                ]
+                ==
+                category_choice
             ].copy()
+
+
+    # ==================================================
+    # TREND LEVEL FILTER
+    # ==================================================
+
+    if (
+        source_choice == "TikTok"
+        and
+        "trend_level"
+        in filtered_df.columns
+    ):
+
+        level_choice = st.selectbox(
+            "Trend Level",
+            [
+                "Tutti",
+                "CONFIRMED TREND",
+                "EMERGING TREND",
+                "SINGLE VIDEO SIGNAL"
+            ]
+        )
+
+
+        if (
+            level_choice
+            != "Tutti"
+        ):
+
+            filtered_df = filtered_df[
+                filtered_df[
+                    "trend_level"
+                ]
+                ==
+                level_choice
+            ].copy()
+
 
     # ==================================================
     # TABLE
@@ -535,39 +741,67 @@ try:
         "source_summary"
     ]
 
+
     available_columns = [
         col
         for col in wanted_columns
         if col in filtered_df.columns
     ]
 
+
     display_df = filtered_df[
         available_columns
     ].copy()
 
+
     display_df = display_df.rename(
         columns={
-            "trend_name": "Trend",
-            "fashion_category": "Categoria",
-            "combined_score": "Fashion Score",
-            "google_score": "Google",
-            "pinterest_score": "Pinterest",
-            "tiktok_score": "TikTok",
-            "trend_level": "Trend Level",
-            "momentum_label": "Momentum",
-            "action_label": "Action",
-            "video_count": "Video",
-            "author_count": "Autori",
-            "source_summary": "Fonte"
+            "trend_name":
+                "Trend",
+
+            "fashion_category":
+                "Categoria",
+
+            "combined_score":
+                "Fashion Score",
+
+            "google_score":
+                "Google",
+
+            "pinterest_score":
+                "Pinterest",
+
+            "tiktok_score":
+                "TikTok",
+
+            "trend_level":
+                "Trend Level",
+
+            "momentum_label":
+                "Momentum",
+
+            "action_label":
+                "Action",
+
+            "video_count":
+                "Video",
+
+            "author_count":
+                "Autori",
+
+            "source_summary":
+                "Fonte"
         }
     )
+
 
     st.dataframe(
         display_df,
         use_container_width=True,
         hide_index=True,
-        height=600
+        height=620
     )
+
 
 except Exception as e:
 
