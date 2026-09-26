@@ -1,0 +1,1 @@
+# fashion-intelligence-app
