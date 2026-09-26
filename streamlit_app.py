@@ -34,6 +34,8 @@ def load_trends():
 
     params = {
         "select": "*",
+        "trend_name": "not.is.null",
+        "combined_score": "not.is.null",
         "order": "combined_score.desc"
     }
 
@@ -47,7 +49,6 @@ def load_trends():
     response.raise_for_status()
 
     return response.json()
-
 
 # ======================================================
 # HEADER
@@ -67,13 +68,33 @@ try:
     data = load_trends()
 
     if not data:
-        st.warning("Nessun trend trovato nel database.")
+        st.warning("Nessun trend valido trovato nel database.")
         st.stop()
 
     df = pd.DataFrame(data)
 
+    # ulteriore pulizia lato Python
+    df = df[
+        df["trend_name"].notna() &
+        df["combined_score"].notna()
+    ].copy()
+
+    df["combined_score"] = pd.to_numeric(
+        df["combined_score"],
+        errors="coerce"
+    )
+
+    df = df.dropna(
+        subset=["trend_name", "combined_score"]
+    )
+
+    df = df.sort_values(
+        "combined_score",
+        ascending=False
+    )
+
     st.success(
-        f"Connessione a Supabase riuscita — {len(df)} trend caricati."
+        f"Connessione a Supabase riuscita — {len(df)} trend validi caricati."
     )
 
     # ==================================================
@@ -87,25 +108,27 @@ try:
     with col1:
         st.metric(
             "Top Trend",
-            top.get("trend_name", "-")
+            str(top.get("trend_name", "-"))
         )
 
     with col2:
         st.metric(
             "Fashion Score",
-            top.get("combined_score", "-")
+            f"{top.get('combined_score', 0):.1f}"
         )
 
     with col3:
+        value = top.get("momentum_label")
         st.metric(
             "Momentum",
-            top.get("momentum_label", "-")
+            "-" if pd.isna(value) else str(value)
         )
 
     with col4:
+        value = top.get("action_label")
         st.metric(
             "Action",
-            top.get("action_label", "-")
+            "-" if pd.isna(value) else str(value)
         )
 
     st.divider()
@@ -134,8 +157,24 @@ try:
         if col in df.columns
     ]
 
+    display_df = df[available_columns].copy()
+
+    display_df = display_df.rename(
+        columns={
+            "trend_name": "Trend",
+            "fashion_category": "Categoria",
+            "combined_score": "Fashion Score",
+            "google_score": "Google",
+            "pinterest_score": "Pinterest",
+            "tiktok_score": "TikTok",
+            "momentum_label": "Momentum",
+            "action_label": "Action",
+            "source_summary": "Fonte"
+        }
+    )
+
     st.dataframe(
-        df[available_columns],
+        display_df,
         use_container_width=True,
         hide_index=True
     )
